@@ -1,5 +1,30 @@
+# =========================
+# Audio files
+# =========================
 *.webm
 *.wav
 *.mp3
-code.txt
+
+# =========================
+# Environment & secrets
+# =========================
 .env
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+venv/
+meeting_recorder_backend/venv/
+
+# =========================
+# Backend runtime folders
+# =========================
+meeting_recorder_backend/uploads/
+meeting_recorder_backend/processed/
+
+# =========================
+# Misc
+# =========================
+code.txt
