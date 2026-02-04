@@ -1,10 +1,9 @@
 
 
 from fastapi import FastAPI
-from app.api.transcribe import router as transcribe_router
-from app.api.status import router as status_router
-
-# ---------------- APP SETUP ----------------
+from app.api.ws_test import router as ws_router
+from app.api.ws_audio import router as ws_audio_router
+# ------- APP SETUP ----------------
 
 app = FastAPI(
     title="Meeting Recorder Backend",
@@ -14,11 +13,14 @@ app = FastAPI(
 
 
 
-# ---------------- ROUTES ----------------
+# ---------- ROUTES ----------------
 
 @app.get("/")
 def test_route():
     return {"status": "Backend running"}
 
-app.include_router(transcribe_router)
-app.include_router(status_router)
+
+# WebSocket routes
+
+app.include_router(ws_router)
+app.include_router(ws_audio_router)

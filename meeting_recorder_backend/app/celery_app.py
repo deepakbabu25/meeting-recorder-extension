@@ -8,5 +8,5 @@ celery_app = Celery(
 
 
 celery_app.conf.imports = (
-    "app.workers.transcription_tasks",
+    
 )
