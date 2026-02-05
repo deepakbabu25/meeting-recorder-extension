@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      background: rgba(20,20,20,0.85);
+      color: white;
+      font-family: system-ui;
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #content {
+      padding: 12px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    #chatbar {
+      display: flex;
+      padding: 10px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      background: rgba(0,0,0,0.6);
+    }
+
+    #question {
+      flex: 1;
+      padding: 8px;
+      border-radius: 6px;
+      border: none;
+      outline: none;
+    }
+
+    #ask {
+      margin-left: 8px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+    }
+
+    #messages {
+      padding: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="content">Waiting…</div>
+
+  <div id="messages"></div>
+
+  <div id="chatbar">
+    <input id="question" placeholder="Ask about this meeting" />
+    <button id="ask">send</button>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

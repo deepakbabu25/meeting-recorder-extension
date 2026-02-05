@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from app.api.ws_test import router as ws_router
 from app.api.ws_audio import router as ws_audio_router
+from app.api.meeting_status import router as meeting_status_router
 # ------- APP SETUP ----------------
 
 app = FastAPI(
@@ -24,3 +25,6 @@ def test_route():
 
 app.include_router(ws_router)
 app.include_router(ws_audio_router)
+
+#api routes
+app.include_router(meeting_status_router)

@@ -3,7 +3,7 @@ let audioContext;
 let processor;
 let source;
 let stream;
-
+let currentMeetingId = null;
 console.log("🔥 Offscreen script loaded");
 
 chrome.runtime.onMessage.addListener(async (msg) => {
@@ -14,6 +14,26 @@ chrome.runtime.onMessage.addListener(async (msg) => {
 
     ws = new WebSocket("ws://127.0.0.1:8000/ws/audio");
     ws.binaryType = "arraybuffer";
+
+
+    ws.onmessage =(e)=>{
+      const data = JSON.parse(e.data);
+
+      if(data.type==="MEETING_STARTED"){
+        currentMeetingId = data.meeting_id;
+        console.log("Meeting ID received :", currentMeetingId)
+
+        chrome.runtime.sendMessage({
+          type: "MEETING_STARTED",
+          meeting_id: currentMeetingId
+        });
+
+
+      }
+      if(data.type ==="MEETING_SUMMARY"){
+        chrome.runtime.sendMessage(data);
+      }
+    }
 
     ws.onopen = async () => {
       audioContext = new AudioContext({ sampleRate: 16000 });
@@ -44,10 +64,15 @@ chrome.runtime.onMessage.addListener(async (msg) => {
 
   if (msg.type === "STOP_RECORDING") {
     console.log("🛑 Stopping audio");
+    if(ws && ws.readyState === WebSocket.OPEN){
+      ws.send(JSON.stringify({type:"MEETING_END"}));
+     
+
+    }
 
     if (processor) processor.disconnect();
     if (source) source.disconnect();
-    if (ws) ws.close();
+    
     if (stream) stream.getTracks().forEach(t => t.stop());
   }
 });

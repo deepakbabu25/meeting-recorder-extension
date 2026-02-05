@@ -1,3 +1,7 @@
+
+
+
+
 async function ensureOffscreen() {
   const exists = await chrome.offscreen.hasDocument();
   if (!exists) {
@@ -12,6 +16,9 @@ async function ensureOffscreen() {
 
 chrome.runtime.onMessage.addListener((msg) => {
   (async () => {
+
+
+    
     await ensureOffscreen();
     chrome.runtime.sendMessage(msg);
   })();
