@@ -2,6 +2,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.stt.factory import get_stt_engine
 from app.state.meetings import MEETING_TRANSCRIPTS
 # from app.utils.audio_decode import webm_bytes_to_pcm
+from app.services.meeting_summary import generate_meeting_summary
 import uuid
 import json
 import numpy as np
@@ -80,6 +81,16 @@ async def ws_audio(websocket: WebSocket):
         print(final_transcript)
         print("==============================================\n")
 
+
+        #calling service here
+        if final_transcript.strip():
+            print(" sending transcript to meeting agent...")
+
+            summary_result=await generate_meeting_summary(final_transcript)
+
+            print("========MEETING SUMMARY=========")
+            print(summary_result)
+            print("---------------------------------")
         MEETING_TRANSCRIPTS.pop(meeting_id, None)
         MEETING_AUDIO_BUFFERS.pop(meeting_id, None)
         print(f"Cleaned up meeting {meeting_id}")
