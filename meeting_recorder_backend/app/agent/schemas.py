@@ -9,3 +9,5 @@ class MeetingInsights(BaseModel):
     action_items: List[str]
     decisions: List[str]
 
+class ChatResponse(BaseModel):
+    answer: str
