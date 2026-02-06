@@ -16,24 +16,37 @@ chrome.runtime.onMessage.addListener(async (msg) => {
     ws.binaryType = "arraybuffer";
 
 
-    ws.onmessage =(e)=>{
-      const data = JSON.parse(e.data);
+   ws.onmessage = (e) => {
+  const data = JSON.parse(e.data);
+  console.log("📩 WS → Offscreen:", data);
 
-      if(data.type==="MEETING_STARTED"){
-        currentMeetingId = data.meeting_id;
-        console.log("Meeting ID received :", currentMeetingId)
+  if (data.type === "MEETING_STARTED") {
+    currentMeetingId = data.meeting_id;
+    console.log("Meeting ID received:", currentMeetingId);
 
-        chrome.runtime.sendMessage({
-          type: "MEETING_STARTED",
-          meeting_id: currentMeetingId
-        });
+    chrome.runtime.sendMessage({
+      type: "MEETING_STARTED",
+      meeting_id: currentMeetingId
+    });
+    return;
+  }
 
+  if (data.type === "MEETING_ENDED") {
+    console.log("📤 Forwarding MEETING_ENDED to background");
 
-      }
-      if(data.type ==="MEETING_SUMMARY"){
-        chrome.runtime.sendMessage(data);
-      }
-    }
+    chrome.runtime.sendMessage({
+      type: "MEETING_ENDED",
+      meeting_id: data.meeting_id
+    });
+    return;
+  }
+
+  // (optional, you’re not using this now)
+  // if (data.type === "MEETING_SUMMARY") {
+  //   chrome.runtime.sendMessage(data);
+  // }
+};
+
 
     ws.onopen = async () => {
       audioContext = new AudioContext({ sampleRate: 16000 });

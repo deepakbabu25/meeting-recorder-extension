@@ -34,13 +34,24 @@ async def ws_audio(websocket: WebSocket):
             if msg.get("text"):
                 data = json.loads(msg["text"])
                 if data.get("type") == "MEETING_END":
-                    print("🔚 MEETING_END received")
+                    
 
                     pcm_audio = MEETING_AUDIO_BUFFERS.get(meeting_id)
                     final_transcript = ""
 
                     if pcm_audio is not None and len(pcm_audio) > 0:
                         final_transcript = stt_engine.transcribe_pcm(pcm_audio)
+                    
+                    MEETING_STATE[meeting_id]={
+                            "final_transcript": final_transcript,
+                            "final_summary": None,
+                            "chat_history":[],
+                            "status":"PROCESSING"
+                        }
+                    await websocket.send_text(json.dumps({
+                                "type": "MEETING_ENDED",
+                                "meeting_id": meeting_id
+                            }))
 
                     print("\n========== FINAL TRANSCRIPT ==========")
                     print(final_transcript)
@@ -49,17 +60,32 @@ async def ws_audio(websocket: WebSocket):
                     if final_transcript.strip():
                         print("Generating meeting summary...")
                         summary_result = await generate_meeting_summary(final_transcript)
+                        # MEETING_STATE[meeting_id]={
+                        #     "final_transcript": final_transcript,
+                        #     "final_summary": summary_result.model_dump(),
+                        #     "chat_history":[],
+                        #     "status":"READY"
+                        # }
+                        MEETING_STATE[meeting_id]["final_summary"] = summary_result.model_dump()
+                        MEETING_STATE[meeting_id]["status"]="READY"
+
                         print(summary_result)
+                        # await websocket.send_text(json.dumps({
+                        #         "type": "MEETING_ENDED",
+                        #         "meeting_id": meeting_id
+                        #     }))
+                        
 
-                        await websocket.send_text(json.dumps({
-                            "type": "MEETING_SUMMARY",
-                            "meeting_id": meeting_id,
-                            "summary": summary_result.model_dump()
-                        }))
+                        # await websocket.send_text(json.dumps({
+                        #     "type": "MEETING_SUMMARY",
+                        #     "meeting_id": meeting_id,
+                        #     "summary": summary_result.model_dump()
+                        # }))
 
-                        print(" Summary sent to client")
+                        print(" Summary generated and stored")
 
-                    break  #  exit loop AFTER sending summary
+                    return
+                  #  exit loop AFTER sending summary
 
             # ===== AUDIO =====
             if msg.get("bytes"):

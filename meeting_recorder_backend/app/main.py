@@ -5,6 +5,9 @@ from app.api.ws_test import router as ws_router
 from app.api.ws_audio import router as ws_audio_router
 from app.api.meeting_status import router as meeting_status_router
 from app.api.chat import router as chat_agent
+from app.api.meeting import router as meeting_router
+from app.api.lat_meeting import router as latestMeeting
+from fastapi.middleware.cors import CORSMiddleware
 # ------- APP SETUP ----------------
 
 app = FastAPI(
@@ -13,6 +16,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "chrome-extension://obfpeflgmjfikanlnkebbliemicokecl",
+        "http://localhost",
+        "http://127.0.0.1",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------- ROUTES ----------------
@@ -31,3 +46,6 @@ app.include_router(ws_audio_router)
 app.include_router(meeting_status_router)
 
 app.include_router(chat_agent)
+
+app.include_router(meeting_router)
+app.include_router(latestMeeting)

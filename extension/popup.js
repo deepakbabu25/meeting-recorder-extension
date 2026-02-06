@@ -10,7 +10,7 @@ document.getElementById("start").onclick = async () => {
 };
 
 document.getElementById("stop").onclick =async () => {
-  chrome.runtime.sendMessage({ type: "STOP_RECORDING" });
+  // chrome.runtime.sendMessage({ type: "STOP_RECORDING" });
 
 
   const[tab]=await chrome.tabs.query({
@@ -20,6 +20,7 @@ document.getElementById("stop").onclick =async () => {
   await chrome.sidePanel.open({
     tabId: tab.id
   });
+  chrome.runtime.sendMessage({ type: "STOP_RECORDING" });
 //   chrome.runtime.sendMessage({
 //   type: "OPEN_SUMMARY_PANEL"
 // });
