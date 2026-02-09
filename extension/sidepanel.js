@@ -43,7 +43,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.type === "MEETING_ENDED") {
     if (pollingStarted) return;
-    if(!currentMeetingId && msg.meetingId){
+    if(!currentMeetingId && msg.meeting_id){
       currentMeetingId = msg.meeting_id
     }
     if(!currentMeetingId){
