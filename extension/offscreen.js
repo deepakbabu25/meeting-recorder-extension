@@ -11,9 +11,12 @@ chrome.runtime.onMessage.addListener(async (msg) => {
 
   if (msg.type === "START_TAB_CAPTURE") {
     console.log("🎵 Starting tab audio stream");
+    
 
     ws = new WebSocket("ws://127.0.0.1:8000/ws/audio");
     ws.binaryType = "arraybuffer";
+
+    
 
 
    ws.onmessage = (e) => {
@@ -51,16 +54,37 @@ chrome.runtime.onMessage.addListener(async (msg) => {
     ws.onopen = async () => {
       audioContext = new AudioContext({ sampleRate: 16000 });
 
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          mandatory: {
+      // stream = await navigator.mediaDevices.getUserMedia({
+      //   audio: {
+      //     mandatory: {
+      //       chromeMediaSource: "tab",
+      //       chromeMediaSourceId: msg.streamId
+      //     }
+      //   }
+      // });
+      const tabStream=await navigator.mediaDevices.getUserMedia({
+        audio:{
+          mandatory:{
             chromeMediaSource: "tab",
-            chromeMediaSourceId: msg.streamId
+            chromeMediaSourceId: msg.streamId,
+            googDiableLocalEcho: true
+
           }
         }
       });
+      const micStream =await navigator.mediaDevices.getUserMedia({
+        audio: true
+      });
 
-      source = audioContext.createMediaStreamSource(stream);
+      const tabSource = audioContext.createMediaStreamSource(tabStream);
+      const micSource= audioContext.createMediaStreamSource(micStream);
+
+      const destination= audioContext.createMediaStreamDestination();
+
+      tabSource.connect(destination);
+      micSource.connect(destination);
+
+      source = audioContext.createMediaStreamSource(destination.stream);
       processor = audioContext.createScriptProcessor(4096, 1, 1);
 
       processor.onaudioprocess = (e) => {

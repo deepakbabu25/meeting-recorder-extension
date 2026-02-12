@@ -117,7 +117,7 @@ askBtn.onclick = async () => {
   questionInput.value = "";
 
   const thinkingId = `thinking-${Date.now()}`;
-  messagesDiv.innerHTML += `<p id="${thinkingId}"><i>Bot is thinking…</i></p>`;
+  messagesDiv.innerHTML += `<p id="${thinkingId}"><i>Bot is thinking</i></p>`;
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
   askBtn.disabled = true;

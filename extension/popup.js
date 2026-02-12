@@ -1,4 +1,13 @@
 document.getElementById("start").onclick = async () => {
+  try{
+  await navigator.mediaDevices.getUserMedia({audio:true});
+  console.log("mic permission granted");
+  }catch(err){
+    console.error("mic permission failed:", err);
+    alert("microphone permission required to record your voice"
+    )
+    return;
+  }
   const streamId = await chrome.tabCapture.getMediaStreamId();
 
   chrome.runtime.sendMessage({

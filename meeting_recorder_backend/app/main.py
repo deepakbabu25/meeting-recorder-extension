@@ -8,6 +8,8 @@ from app.api.chat import router as chat_agent
 from app.api.meeting import router as meeting_router
 from app.api.lat_meeting import router as latestMeeting
 from fastapi.middleware.cors import CORSMiddleware
+
+# from app.api.speaker_identification import router as diarization_router
 # ------- APP SETUP ----------------
 
 app = FastAPI(
@@ -49,3 +51,6 @@ app.include_router(chat_agent)
 
 app.include_router(meeting_router)
 app.include_router(latestMeeting)
+
+
+# app.include_router(diarization_router)
