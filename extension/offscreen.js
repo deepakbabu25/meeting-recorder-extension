@@ -67,13 +67,17 @@ chrome.runtime.onMessage.addListener(async (msg) => {
           mandatory:{
             chromeMediaSource: "tab",
             chromeMediaSourceId: msg.streamId,
-            googDiableLocalEcho: true
+            googleDisableLocalEcho: true
 
           }
         }
       });
       const micStream =await navigator.mediaDevices.getUserMedia({
-        audio: true
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl:true
+        }
       });
 
       const tabSource = audioContext.createMediaStreamSource(tabStream);
@@ -87,13 +91,17 @@ chrome.runtime.onMessage.addListener(async (msg) => {
       source = audioContext.createMediaStreamSource(destination.stream);
       processor = audioContext.createScriptProcessor(4096, 1, 1);
 
+      const silentGain = audioContext.createGain();
+      silentGain.gain.value=0;
+
       processor.onaudioprocess = (e) => {
         const pcm = e.inputBuffer.getChannelData(0);
         ws.send(pcm.buffer);
       };
-      source.connect(audioContext.destination)
+      // source.connect(audioContext.destination)
       source.connect(processor);
-      processor.connect(audioContext.destination);
+      processor.connect(silentGain);
+      silentGain.connect(audioContext.destination);
 
       console.log("🎙 Tab audio streaming started");
     };
