@@ -13,7 +13,12 @@ class WhisperSTT(SpeechToText):
        
 
     def transcribe(self, audio_path: str) -> str:
-        segments, _=self.model.transcribe(audio_path)
+        segments, _=self.model.transcribe(audio_path,
+                                          beam_size=1,
+                                          temperature=0.0,
+                                          vad_filter=True,
+                                          language="en"
+                                          )
 
         transcript=""
         for segment in segments:
@@ -28,8 +33,11 @@ class WhisperSTT(SpeechToText):
             
 
             segements, _=self.model.transcribe(pcm_audio,
+                                               beam_size=1,
+                                               temperature=0.0,
                                                vad_filter=True,
-                                               language="en"
+                                               language="en",
+                                               condition_on_previous_text =False
                                                )
             transcript=""
             for segment in segements:
