@@ -5,6 +5,7 @@ from app.services.meeting_summary import generate_meeting_summary
 import uuid
 import json
 import numpy as np
+import time
 
 router = APIRouter()
 
@@ -31,7 +32,7 @@ async def ws_audio(websocket: WebSocket):
     await websocket.accept()
     meeting_id = str(uuid.uuid4())
 
-    print(f"WebSocket connection accepted for meeting {meeting_id}")
+    print(f"[{meeting_id}] WebSocket connection accepted")
 
     await websocket.send_text(json.dumps({
         "type": "MEETING_STARTED",
@@ -43,6 +44,7 @@ async def ws_audio(websocket: WebSocket):
 
     incremental_transcript: list[str] = []
     partial_summaries: list[str] = []
+    last_ping = time.time()  # track last server→client keepalive
 
     try:
         while True:
@@ -58,7 +60,7 @@ async def ws_audio(websocket: WebSocket):
                 data = json.loads(msg["text"])
 
                 if data.get("type") == "MEETING_END":
-                    print("Meeting end received")
+                    print(f"[{meeting_id}] Meeting end received")
 
                     buffer = MEETING_AUDIO_BUFFERS.get(meeting_id)
                     final_text = ""
@@ -69,7 +71,7 @@ async def ws_audio(websocket: WebSocket):
                                 buffer[OVERLAP_SAMPLES:]
                             )
                         except Exception as e:
-                            print("Final transcription failed:", str(e))
+                            print(f"[{meeting_id}] Final transcription failed:", str(e))
 
                     if final_text:
                         incremental_transcript.append(final_text)
@@ -78,9 +80,9 @@ async def ws_audio(websocket: WebSocket):
                         t.strip() for t in incremental_transcript if t.strip()
                     ).strip()
 
-                    print("\n========== FINAL TRANSCRIPT ==========")
+                    print(f"\n[{meeting_id}] ========== FINAL TRANSCRIPT ==========")
                     print(full_transcript)
-                    print("=====================================\n")
+                    print(f"[{meeting_id}] =====================================\n")
 
                     MEETING_STATE[meeting_id] = {
                         "final_transcript": full_transcript,
@@ -94,7 +96,7 @@ async def ws_audio(websocket: WebSocket):
                         "meeting_id": meeting_id
                     }))
 
-                    print("Generating final summary...")
+                    print(f"[{meeting_id}] Generating final summary...")
 
                     word_count = len(full_transcript.split())
 
@@ -145,10 +147,10 @@ async def ws_audio(websocket: WebSocket):
                             }
 
                         MEETING_STATE[meeting_id]["status"] = "READY"
-                        print("Final summary generated successfully")
+                        print(f"[{meeting_id}] Final summary generated successfully")
 
                     except Exception as e:
-                        print("Summary generation failed:", str(e))
+                        print(f"[{meeting_id}] Summary generation failed:", str(e))
                         MEETING_STATE[meeting_id]["final_summary"] = {
                             "summary": "Meeting analysis completed, but summary could not be generated.",
                             "key_points": [],
@@ -173,7 +175,16 @@ async def ws_audio(websocket: WebSocket):
                 )
 
                 buffer = MEETING_AUDIO_BUFFERS[meeting_id]
-                print("Buffered seconds:", round(len(buffer) / SAMPLE_RATE, 2))
+                print(f"[{meeting_id}]Buffered seconds:", round(len(buffer) / SAMPLE_RATE, 2))
+
+                # Server→client keepalive every 20s to keep ngrok tunnel alive
+                now = time.time()
+                if now - last_ping >= 20:
+                    try:
+                        await websocket.send_text(json.dumps({"type": "KEEPALIVE"}))
+                        last_ping = now
+                    except Exception:
+                        pass
 
                 while len(buffer) >= CHUNK_SAMPLES:
                     chunk = buffer[:CHUNK_SAMPLES]
@@ -181,7 +192,7 @@ async def ws_audio(websocket: WebSocket):
                     try:
                         text = stt_engine.transcribe_pcm(chunk)
                     except Exception as e:
-                        print("Chunk transcription failed:", str(e))
+                        print(f"[{meeting_id}] Chunk transcription failed:", str(e))
                         text = ""
 
                     if text:
@@ -198,4 +209,4 @@ async def ws_audio(websocket: WebSocket):
 
     finally:
         MEETING_AUDIO_BUFFERS.pop(meeting_id, None)
-        print(f"Cleaned up meeting {meeting_id}")
+        print(f"[{meeting_id}] Cleaned up")

@@ -22,10 +22,11 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "chrome-extension://obfpeflgmjfikanlnkebbliemicokecl",
+        "https://debroah-prehazard-candance.ngrok-free.dev",
         "http://localhost",
         "http://127.0.0.1",
     ],
+    allow_origin_regex=r"chrome-extension://.*",  # allow any extension ID
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
