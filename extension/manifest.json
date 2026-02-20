@@ -2,24 +2,21 @@
   "manifest_version": 3,
   "name": "Meeting Recorder & Summarizer",
   "version": "1.0.0",
-
   "permissions": [
     "tabCapture",
     "activeTab",
     "storage",
     "offscreen",
-    "sidePanel"
+    "sidePanel",
+    "alarms"
   ],
-  
-
   "background": {
     "service_worker": "background.js"
   },
-
   "action": {
     "default_popup": "popup.html"
   },
-  "side_panel":{
-    "default_path":"sidepanel.html"
+  "side_panel": {
+    "default_path": "sidepanel-dist/index.html"
   }
 }
