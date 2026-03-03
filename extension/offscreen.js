@@ -44,6 +44,15 @@ chrome.runtime.onMessage.addListener(async (msg) => {
         return; // server keepalive — ignore silently
       }
 
+      if (data.type === "PARTIAL_TRANSCRIPT") {
+        chrome.runtime.sendMessage({
+          type: "PARTIAL_TRANSCRIPT",
+          meeting_id: data.meeting_id,
+          text: data.text
+        });
+        return;
+      }
+
       if (data.type === "MEETING_ENDED") {
         console.log("Backend finished meeting");
 

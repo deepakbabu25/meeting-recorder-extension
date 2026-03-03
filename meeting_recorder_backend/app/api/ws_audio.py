@@ -1,30 +1,28 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from app.stt.factory import get_stt_engine
+from app.config import DEEPGRAM_API_KEY
 from app.state.meetings import MEETING_STATE
 from app.services.meeting_summary import generate_meeting_summary
+import asyncio
 import uuid
 import json
 import numpy as np
 import time
+import websockets
 
 router = APIRouter()
 
-# ============================
-# AUDIO CONFIG
-# ============================
-
 SAMPLE_RATE = 16000
-CHUNK_SEC = 18
-OVERLAP_SEC = 3
+MIN_WORDS_REQUIRED = 5
 
-CHUNK_SAMPLES = CHUNK_SEC * SAMPLE_RATE
-OVERLAP_SAMPLES = OVERLAP_SEC * SAMPLE_RATE
-STEP_SAMPLES = CHUNK_SAMPLES - OVERLAP_SAMPLES
-
-CHUNKS_PER_SUMMARY = 10
-MIN_WORDS_REQUIRED = 5  # Stronger than char length check
-
-MEETING_AUDIO_BUFFERS = {}
+DEEPGRAM_URL = (
+    f"wss://api.deepgram.com/v1/listen"
+    f"?encoding=linear16"
+    f"&sample_rate={SAMPLE_RATE}"
+    f"&channels=1"
+    f"&interim_results=true"
+    f"&smart_format=true"
+    f"&endpointing=300"
+)
 
 
 @router.websocket("/ws/audio")
@@ -39,174 +37,180 @@ async def ws_audio(websocket: WebSocket):
         "meeting_id": meeting_id
     }))
 
-    stt_engine = get_stt_engine()
-    MEETING_AUDIO_BUFFERS[meeting_id] = np.array([], dtype=np.float32)
-
     incremental_transcript: list[str] = []
-    partial_summaries: list[str] = []
-    last_ping = time.time()  # track last server→client keepalive
+    last_ping = time.time()
+    meeting_ended = False
+
+    # ============================
+    # CONNECT TO DEEPGRAM
+    # ============================
+    dg_headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}"}
 
     try:
-        while True:
+        async with websockets.connect(DEEPGRAM_URL, additional_headers=dg_headers) as dg_ws:
+            print(f"[{meeting_id}] Connected to Deepgram")
+
+            # Task: receive transcripts from Deepgram and forward to extension
+            async def receive_from_deepgram():
+                nonlocal meeting_ended
+                try:
+                    async for message in dg_ws:
+                        if isinstance(message, str):
+                            data = json.loads(message)
+                            msg_type = data.get("type", "")
+
+                            if msg_type == "Results":
+                                is_final = data.get("is_final", False)
+                                try:
+                                    transcript = data["channel"]["alternatives"][0]["transcript"]
+                                except (KeyError, IndexError):
+                                    transcript = ""
+
+                                if is_final and transcript.strip():
+                                    txt = transcript.strip()
+                                    last = incremental_transcript[-1] if incremental_transcript else ""
+                                    # Guard: last must be non-empty before dedup check.
+                                    # "anything".endswith("") is ALWAYS True in Python!
+                                    is_dup = last and (
+                                        txt == last
+                                        or last.endswith(txt)
+                                        or txt.endswith(last)
+                                    )
+                                    if is_dup:
+                                        print(f"[{meeting_id}] Skipping dup: '{txt[:50]}'")
+                                    else:
+                                        incremental_transcript.append(txt)
+                                        print(f"[{meeting_id}] Live ✅: {txt}")
+                                        try:
+                                            await websocket.send_text(json.dumps({
+                                                "type": "PARTIAL_TRANSCRIPT",
+                                                "meeting_id": meeting_id,
+                                                "text": txt
+                                            }))
+                                        except Exception:
+                                            pass
+
+                            elif msg_type == "Metadata":
+                                print(f"[{meeting_id}] Deepgram metadata received")
+                            elif msg_type == "Error":
+                                print(f"[{meeting_id}] Deepgram error: {data}")
+                except Exception as e:
+                    if not meeting_ended:
+                        print(f"[{meeting_id}] Deepgram receive error: {e}")
+
+            dg_receiver = asyncio.create_task(receive_from_deepgram())
+
             try:
-                msg = await websocket.receive()
-            except (WebSocketDisconnect, RuntimeError):
-                break
+                while True:
+                    try:
+                        msg = await websocket.receive()
+                    except (WebSocketDisconnect, RuntimeError):
+                        break
 
-            # ============================
-            # MEETING END
-            # ============================
-            if msg.get("text"):
-                data = json.loads(msg["text"])
+                    # ── TEXT MESSAGES ──────────────────────────────────────────
+                    if msg.get("text"):
+                        data = json.loads(msg["text"])
 
-                if data.get("type") == "MEETING_END":
-                    print(f"[{meeting_id}] Meeting end received")
+                        if data.get("type") == "PING":
+                            continue
 
-                    buffer = MEETING_AUDIO_BUFFERS.get(meeting_id)
-                    final_text = ""
+                        if data.get("type") == "MEETING_END":
+                            print(f"[{meeting_id}] Meeting end — closing Deepgram")
+                            meeting_ended = True
 
-                    if buffer is not None and len(buffer) > OVERLAP_SAMPLES:
+                            # Tell Deepgram to flush remaining audio
+                            try:
+                                await dg_ws.send(json.dumps({"type": "CloseStream"}))
+                                await asyncio.sleep(1.5)  # wait for final transcripts
+                            except Exception:
+                                pass
+
+                            dg_receiver.cancel()
+
+                            full_transcript = " ".join(
+                                t.strip() for t in incremental_transcript if t.strip()
+                            ).strip()
+
+                            print(f"\n[{meeting_id}] ===== FINAL TRANSCRIPT =====")
+                            print(full_transcript)
+                            print(f"[{meeting_id}] ============================\n")
+
+                            MEETING_STATE[meeting_id] = {
+                                "final_transcript": full_transcript,
+                                "final_summary": None,
+                                "chat_history": [],
+                                "status": "PROCESSING"
+                            }
+
+                            await websocket.send_text(json.dumps({
+                                "type": "MEETING_ENDED",
+                                "meeting_id": meeting_id
+                            }))
+
+                            # ── Generate Summary ───────────────────────────────
+                            word_count = len(full_transcript.split())
+                            try:
+                                if not full_transcript:
+                                    MEETING_STATE[meeting_id]["final_summary"] = {
+                                        "summary": "No discussion occurred in this meeting.",
+                                        "key_points": [], "action_items": [], "decisions": []
+                                    }
+                                elif word_count < MIN_WORDS_REQUIRED:
+                                    MEETING_STATE[meeting_id]["final_summary"] = {
+                                        "summary": "Not enough information was recorded to generate a meaningful summary.",
+                                        "key_points": [], "action_items": [], "decisions": []
+                                    }
+                                else:
+                                    summary_result = await generate_meeting_summary(full_transcript)
+                                    summary_dict = summary_result.model_dump()
+                                    MEETING_STATE[meeting_id]["final_summary"] = {
+                                        "summary": summary_dict.get("summary", ""),
+                                        "key_points": summary_dict.get("key_points", []),
+                                        "action_items": summary_dict.get("action_items", []),
+                                        "decisions": summary_dict.get("decisions", [])
+                                    }
+
+                                MEETING_STATE[meeting_id]["status"] = "READY"
+                                print(f"[{meeting_id}] Summary generated successfully")
+
+                            except Exception as e:
+                                print(f"[{meeting_id}] Summary generation failed: {e}")
+                                MEETING_STATE[meeting_id]["final_summary"] = {
+                                    "summary": "Meeting analysis completed, but summary could not be generated.",
+                                    "key_points": [], "action_items": [], "decisions": []
+                                }
+                                MEETING_STATE[meeting_id]["status"] = "FAILED"
+
+                            await websocket.close()
+                            break
+
+                    # ── AUDIO CHUNKS → forward to Deepgram ────────────────────
+                    if msg.get("bytes"):
+                        pcm_float = np.frombuffer(msg["bytes"], dtype=np.float32)
+                        if pcm_float.size == 0:
+                            continue
+
+                        # Convert Float32 PCM → Int16 (Deepgram expects linear16)
+                        pcm_int16 = (pcm_float * 32767).clip(-32768, 32767).astype(np.int16)
+                        audio_bytes = pcm_int16.tobytes()
                         try:
-                            final_text = stt_engine.transcribe_pcm(
-                                buffer[OVERLAP_SAMPLES:]
-                            )
+                            await dg_ws.send(audio_bytes)
                         except Exception as e:
-                            print(f"[{meeting_id}] Final transcription failed:", str(e))
+                            print(f"[{meeting_id}] Failed to send to Deepgram: {e}")
 
-                    if final_text:
-                        incremental_transcript.append(final_text)
+                        # Keep ngrok alive every 20s
+                        now = time.time()
+                        if now - last_ping >= 20:
+                            try:
+                                await websocket.send_text(json.dumps({"type": "KEEPALIVE"}))
+                                last_ping = now
+                            except Exception:
+                                pass
 
-                    full_transcript = " ".join(
-                        t.strip() for t in incremental_transcript if t.strip()
-                    ).strip()
+            finally:
+                dg_receiver.cancel()
+                print(f"[{meeting_id}] Cleaned up")
 
-                    print(f"\n[{meeting_id}] ========== FINAL TRANSCRIPT ==========")
-                    print(full_transcript)
-                    print(f"[{meeting_id}] =====================================\n")
-
-                    MEETING_STATE[meeting_id] = {
-                        "final_transcript": full_transcript,
-                        "final_summary": None,
-                        "chat_history": [],
-                        "status": "PROCESSING"
-                    }
-
-                    await websocket.send_text(json.dumps({
-                        "type": "MEETING_ENDED",
-                        "meeting_id": meeting_id
-                    }))
-
-                    print(f"[{meeting_id}] Generating final summary...")
-
-                    word_count = len(full_transcript.split())
-
-                    try:
-                        # ============================
-                        # CASE 1: No speech
-                        # ============================
-                        if not full_transcript:
-                            MEETING_STATE[meeting_id]["final_summary"] = {
-                                "summary": "No discussion occurred in this meeting.",
-                                "key_points": [],
-                                "action_items": [],
-                                "decisions": []
-                            }
-
-                        # ============================
-                        # CASE 2: Too short
-                        # ============================
-                        elif word_count < MIN_WORDS_REQUIRED:
-                            MEETING_STATE[meeting_id]["final_summary"] = {
-                                "summary": "Not enough information was recorded to generate a meaningful summary.",
-                                "key_points": [],
-                                "action_items": [],
-                                "decisions": []
-                            }
-
-                        # ============================
-                        # CASE 3: Normal meeting
-                        # ============================
-                        else:
-                            if partial_summaries:
-                                combined_partial = "\n".join(
-                                    s for s in partial_summaries if s.strip()
-                                )
-                                source_text = combined_partial if combined_partial else full_transcript
-                            else:
-                                source_text = full_transcript
-
-                            summary_result = await generate_meeting_summary(source_text)
-                            summary_dict = summary_result.model_dump()
-
-                            # Ensure structure safety
-                            MEETING_STATE[meeting_id]["final_summary"] = {
-                                "summary": summary_dict.get("summary", ""),
-                                "key_points": summary_dict.get("key_points", []),
-                                "action_items": summary_dict.get("action_items", []),
-                                "decisions": summary_dict.get("decisions", [])
-                            }
-
-                        MEETING_STATE[meeting_id]["status"] = "READY"
-                        print(f"[{meeting_id}] Final summary generated successfully")
-
-                    except Exception as e:
-                        print(f"[{meeting_id}] Summary generation failed:", str(e))
-                        MEETING_STATE[meeting_id]["final_summary"] = {
-                            "summary": "Meeting analysis completed, but summary could not be generated.",
-                            "key_points": [],
-                            "action_items": [],
-                            "decisions": []
-                        }
-                        MEETING_STATE[meeting_id]["status"] = "FAILED"
-
-                    await websocket.close()
-                    break
-
-            # ============================
-            # AUDIO CHUNKS
-            # ============================
-            if msg.get("bytes"):
-                pcm_chunk = np.frombuffer(msg["bytes"], dtype=np.float32)
-                if pcm_chunk.size == 0:
-                    continue
-
-                MEETING_AUDIO_BUFFERS[meeting_id] = np.concatenate(
-                    [MEETING_AUDIO_BUFFERS[meeting_id], pcm_chunk]
-                )
-
-                buffer = MEETING_AUDIO_BUFFERS[meeting_id]
-                print(f"[{meeting_id}]Buffered seconds:", round(len(buffer) / SAMPLE_RATE, 2))
-
-                # Server→client keepalive every 20s to keep ngrok tunnel alive
-                now = time.time()
-                if now - last_ping >= 20:
-                    try:
-                        await websocket.send_text(json.dumps({"type": "KEEPALIVE"}))
-                        last_ping = now
-                    except Exception:
-                        pass
-
-                while len(buffer) >= CHUNK_SAMPLES:
-                    chunk = buffer[:CHUNK_SAMPLES]
-
-                    try:
-                        text = stt_engine.transcribe_pcm(chunk)
-                    except Exception as e:
-                        print(f"[{meeting_id}] Chunk transcription failed:", str(e))
-                        text = ""
-
-                    if text:
-                        incremental_transcript.append(text)
-
-                        await websocket.send_text(json.dumps({
-                            "type": "PARTIAL_TRANSCRIPT",
-                            "meeting_id": meeting_id,
-                            "text": text
-                        }))
-
-                    buffer = buffer[STEP_SAMPLES:]
-                    MEETING_AUDIO_BUFFERS[meeting_id] = buffer
-
-    finally:
-        MEETING_AUDIO_BUFFERS.pop(meeting_id, None)
-        print(f"[{meeting_id}] Cleaned up")
+    except Exception as e:
+        print(f"[{meeting_id}] Failed to connect to Deepgram: {e}")
+        await websocket.close()

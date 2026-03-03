@@ -1,13 +1,18 @@
 document.getElementById("start").onclick = async () => {
-  try{
-  await navigator.mediaDevices.getUserMedia({audio:true});
-  console.log("mic permission granted");
-  }catch(err){
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true });
+    console.log("mic permission granted");
+  } catch (err) {
     console.error("mic permission failed:", err);
     alert("microphone permission required to record your voice"
     )
     return;
   }
+
+  // Open side panel immediately so live transcript is visible
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  await chrome.sidePanel.open({ tabId: tab.id });
+
   const streamId = await chrome.tabCapture.getMediaStreamId();
 
   chrome.runtime.sendMessage({
@@ -15,24 +20,11 @@ document.getElementById("start").onclick = async () => {
     streamId
   });
 
-  console.log("🎧 tabCapture streamId sent");
+  console.log("🎧 tabCapture streamId sent, side panel opened");
 };
 
-document.getElementById("stop").onclick =async () => {
-  // chrome.runtime.sendMessage({ type: "STOP_RECORDING" });
-
-
-  const[tab]=await chrome.tabs.query({
-    active: true,
-    currentWindow: true
-  })
-  await chrome.sidePanel.open({
-    tabId: tab.id
-  });
+document.getElementById("stop").onclick = async () => {
   chrome.runtime.sendMessage({ type: "STOP_RECORDING" });
-//   chrome.runtime.sendMessage({
-//   type: "OPEN_SUMMARY_PANEL"
-// });
-
-console.log("side panel opened")
+  console.log("stop recording sent");
 };
+

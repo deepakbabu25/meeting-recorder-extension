@@ -163,19 +163,19 @@
 }
 
 .section-dot.blue {
-    background: var(--accent-blue);
+    background: #ffffff;
 }
 
 .section-dot.teal {
-    background: var(--accent-teal);
+    background: #aaaaaa;
 }
 
 .section-dot.purple {
-    background: var(--accent-purple);
+    background: #888888;
 }
 
 .section-dot.yellow {
-    background: #fbbf24;
+    background: #cccccc;
 }
 
 .section-para {
@@ -185,7 +185,7 @@
     background: var(--bg-elevated);
     padding: 10px 12px;
     border-radius: var(--radius-sm);
-    border-left: 2px solid var(--accent-blue);
+    border-left: 2px solid rgba(255, 255, 255, 0.3);
 }
 
 .section-list {
@@ -210,7 +210,7 @@
     content: '›';
     position: absolute;
     left: 8px;
-    color: var(--accent-teal);
+    color: #888888;
     font-weight: 700;
 }
 

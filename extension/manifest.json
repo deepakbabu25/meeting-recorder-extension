@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Meeting Recorder & Summarizer",
+  "name": "WebEnoid",
   "version": "1.0.0",
   "permissions": [
     "tabCapture",
@@ -10,11 +10,21 @@
     "sidePanel",
     "alarms"
   ],
+  "icons": {
+    "16": "icon 16 x 16.png",
+    "48": "icon 48 x 48.png",
+    "128": "icon 128 x 128.png"
+  },
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon 16 x 16.png",
+      "48": "icon 48 x 48.png",
+      "128": "icon 128 x 128.png"
+    }
   },
   "side_panel": {
     "default_path": "sidepanel-dist/index.html"

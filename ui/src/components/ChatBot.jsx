@@ -67,14 +67,14 @@ export default function ChatBot({ onSend, disabled, status }) {
 
                 {messages.map((msg, i) => (
                     <div key={i} className={`chat-bubble ${msg.role} ${msg.error ? 'error' : ''}`}>
-                        <span className="bubble-label">{msg.role === 'user' ? 'You' : 'MeetMind'}</span>
+                        <span className="bubble-label">{msg.role === 'user' ? 'You' : 'WebEnoid'}</span>
                         <p className="bubble-text">{msg.text}</p>
                     </div>
                 ))}
 
                 {thinking && (
                     <div className="chat-bubble bot">
-                        <span className="bubble-label">MeetMind</span>
+                        <span className="bubble-label">WebEnoid</span>
                         <div className="thinking-dots">
                             <span /><span /><span />
                         </div>

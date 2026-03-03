@@ -27,9 +27,8 @@ export default function Header({ meetingId }) {
         <header className="header">
             <div className="header-left">
                 <div className="header-logo">
-                    <span className="logo-icon">◎</span>
+                    <img src="./logo.png" alt="Webenoid" className="logo-img" />
                     <div className="header-titles">
-                        <span className="app-name">MeetMind</span>
                         {meetingId && (
                             <span className="meeting-id" title={meetingId}>
                                 #{meetingId.slice(0, 8)}…

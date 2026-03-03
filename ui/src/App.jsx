@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import Header from './components/Header'
 import SummaryPanel from './components/SummaryPanel'
+import LiveTranscript from './components/LiveTranscript'
 import ChatBot from './components/ChatBot'
 import './App.css'
 
@@ -34,6 +35,7 @@ export default function App() {
   const [meetingId, setMeetingId] = useState(null)
   const [summary, setSummary] = useState(null)   // null=loading, false=error, obj=ready
   const [status, setStatus] = useState('idle') // idle|recording|processing|ready|error
+  const [liveTranscript, setLiveTranscript] = useState([]) // real-time transcript lines
 
   // ── #2 Fix: ref that always reflects latest meetingId for use inside closures ──
   const meetingIdRef = useRef(null)
@@ -99,8 +101,16 @@ export default function App() {
 
         updateMeetingId(msg.meeting_id)
         setSummary(null)
+        setLiveTranscript([])  // clear previous transcript
         setStatus('recording')
         chromeApi.storage.local.set({ currentMeetingId: msg.meeting_id })
+      }
+
+      if (msg.type === 'PARTIAL_TRANSCRIPT') {
+        setLiveTranscript(prev => {
+          if (prev.length > 0 && prev[prev.length - 1] === msg.text) return prev
+          return [...prev, msg.text]
+        })
       }
 
       if (msg.type === 'MEETING_ENDED') {
@@ -166,7 +176,7 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...HEADERS },
       body: JSON.stringify({ meeting_id: meetingIdRef.current, question }),
-    }, 10000)  // chat gets 10s (LLM may be slower than summary poll)
+    }, 30000)  // 30s — LLM can be slow on first query
     const data = await res.json()
     return data.answer
   }
@@ -175,6 +185,7 @@ export default function App() {
     <div className="app">
       <Header meetingId={meetingId} />
       <main className="app-main">
+        <LiveTranscript lines={liveTranscript} status={status} />
         <SummaryPanel summary={summary} status={status} />
         {/* ── #7 Fix: pass status so ChatBot can show error message ── */}
         <ChatBot
