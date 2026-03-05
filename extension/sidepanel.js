@@ -26,6 +26,7 @@ async function bootstrap() {
       renderSummary(data.summary);
       summaryReady = true;
       askBtn.disabled = false;
+      questionInput.disabled = false;
     } else if (data.status === "PROCESSING") {
       // Still generating — start polling.
       pollMeetingSummary(currentMeetingId);
@@ -48,6 +49,7 @@ let summaryReady = false;
 let pollingStarted = false;
 
 askBtn.disabled = true;
+questionInput.disabled = true;
 summaryDiv.innerHTML = "<i>Analyzing meeting...</i>";
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -56,6 +58,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     summaryReady = false;
     pollingStarted = false;
     askBtn.disabled = true;
+    questionInput.disabled = true;
     summaryDiv.innerHTML = "<i>Analyzing meeting...</i>";
 
     // Save this browser's own meeting_id locally so bootstrap can restore it
@@ -74,6 +77,17 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
     pollingStarted = true;
     pollMeetingSummary(currentMeetingId)
+  }
+
+  // RAG first chunk ready — enable chat during live meeting
+  if (msg.type === "CHAT_READY") {
+    if (!currentMeetingId && msg.meeting_id) {
+      currentMeetingId = msg.meeting_id;
+    }
+    summaryReady = true;
+    askBtn.disabled = false;
+    questionInput.disabled = false;
+    summaryDiv.innerHTML += "<p><i>💬 Chat is now available — ask questions about what's been discussed so far.</i></p>";
   }
 });
 
@@ -96,6 +110,7 @@ async function pollMeetingSummary(meetingId) {
         renderSummary(data.summary);
         summaryReady = true;
         askBtn.disabled = false;
+        questionInput.disabled = false;
       }
 
       if (data.status === "NOT_FOUND") {

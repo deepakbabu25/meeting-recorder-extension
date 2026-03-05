@@ -42,11 +42,28 @@ export default function LiveTranscript({ lines, status }) {
                     <p className="transcript-empty">Listening… speak to see the live transcript</p>
                 ) : (
                     <div className="transcript-content">
-                        {lines.map((line, i) => (
-                            <p key={i} className={`transcript-line ${i === lines.length - 1 ? 'latest' : ''}`}>
-                                {line}
-                            </p>
-                        ))}
+                        {lines.map((line, i) => {
+                            // Each line may contain multiple speaker segments separated by \n
+                            const segments = line.split('\n').filter(Boolean)
+                            return segments.map((seg, j) => {
+                                const match = seg.match(/^(Speaker \d+):\s*(.*)$/)
+                                const isLatest = i === lines.length - 1 && j === segments.length - 1
+                                if (match) {
+                                    const spkNum = parseInt(match[1].replace('Speaker ', ''), 10)
+                                    return (
+                                        <div key={`${i}-${j}`} className={`transcript-line ${isLatest ? 'latest' : ''}`}>
+                                            <span className={`speaker-tag spk-${(spkNum - 1) % 5}`}>{match[1]}</span>
+                                            <span className="speaker-text">{match[2]}</span>
+                                        </div>
+                                    )
+                                }
+                                return (
+                                    <div key={`${i}-${j}`} className={`transcript-line ${isLatest ? 'latest' : ''}`}>
+                                        <span className="speaker-text">{seg}</span>
+                                    </div>
+                                )
+                            })
+                        })}
                         <div ref={bottomRef} />
                     </div>
                 )}

@@ -53,6 +53,14 @@ chrome.runtime.onMessage.addListener(async (msg) => {
         return;
       }
 
+      if (data.type === "CHAT_READY") {
+        chrome.runtime.sendMessage({
+          type: "CHAT_READY",
+          meeting_id: data.meeting_id
+        });
+        return;
+      }
+
       if (data.type === "MEETING_ENDED") {
         console.log("Backend finished meeting");
 

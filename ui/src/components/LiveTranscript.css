@@ -127,9 +127,12 @@
     gap: 4px;
 }
 
+/* ── Speaker Diarization ── */
 .transcript-line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
     font-size: 12.5px;
-    color: var(--text-secondary);
     line-height: 1.6;
     padding: 4px 0;
     border-bottom: 1px solid var(--border);
@@ -137,9 +140,53 @@
 }
 
 .transcript-line.latest {
+    border-bottom: none;
+}
+
+.speaker-tag {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* 5 rotating shades — all within B&W theme */
+.spk-0 {
+    background: rgba(255, 255, 255, 0.18);
+    color: #ffffff;
+}
+
+.spk-1 {
+    background: rgba(255, 255, 255, 0.08);
+    color: #cccccc;
+}
+
+.spk-2 {
+    background: rgba(255, 255, 255, 0.13);
+    color: #eeeeee;
+}
+
+.spk-3 {
+    background: rgba(255, 255, 255, 0.06);
+    color: #aaaaaa;
+}
+
+.spk-4 {
+    background: rgba(255, 255, 255, 0.10);
+    color: #dddddd;
+}
+
+.speaker-text {
+    color: var(--text-secondary);
+    flex: 1;
+}
+
+.transcript-line.latest .speaker-text {
     color: var(--text-primary);
     font-weight: 500;
-    border-bottom: none;
 }
 
 @keyframes fadeIn {

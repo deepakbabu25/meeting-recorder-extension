@@ -2,6 +2,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.config import DEEPGRAM_API_KEY
 from app.state.meetings import MEETING_STATE
 from app.services.meeting_summary import generate_meeting_summary
+from app.rag.retriever import live_indexer, flush_remaining_turns
 import asyncio
 import uuid
 import json
@@ -16,12 +17,15 @@ MIN_WORDS_REQUIRED = 5
 
 DEEPGRAM_URL = (
     f"wss://api.deepgram.com/v1/listen"
-    f"?encoding=linear16"
+    f"?model=nova-2"           # Best accuracy model
+    f"&encoding=linear16"
     f"&sample_rate={SAMPLE_RATE}"
     f"&channels=1"
     f"&interim_results=true"
     f"&smart_format=true"
-    f"&endpointing=300"
+    f"&diarize=true"
+    f"&endpointing=500"        # Increased from 300ms → less mid-sentence cutoffs
+    f"&utterance_end_ms=1000"  # Wait 1s of silence before finalising utterance
 )
 
 
@@ -30,7 +34,7 @@ async def ws_audio(websocket: WebSocket):
     await websocket.accept()
     meeting_id = str(uuid.uuid4())
 
-    print(f"[{meeting_id}] WebSocket connection accepted")
+    print(f"[{meeting_id}] WebSocket connection accepted", flush=True)
 
     await websocket.send_text(json.dumps({
         "type": "MEETING_STARTED",
@@ -40,6 +44,7 @@ async def ws_audio(websocket: WebSocket):
     incremental_transcript: list[str] = []
     last_ping = time.time()
     meeting_ended = False
+    indexer_task = None
 
     # ============================
     # CONNECT TO DEEPGRAM
@@ -48,7 +53,23 @@ async def ws_audio(websocket: WebSocket):
 
     try:
         async with websockets.connect(DEEPGRAM_URL, additional_headers=dg_headers) as dg_ws:
-            print(f"[{meeting_id}] Connected to Deepgram")
+            print(f"[{meeting_id}] Connected to Deepgram", flush=True)
+
+            # ── Launch RAG live indexer ────────────────────────────────────
+            async def _on_first_chunk():
+                """Called by live_indexer when first chunk is indexed → enable chat in UI."""
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "CHAT_READY",
+                        "meeting_id": meeting_id
+                    }))
+                    print(f"[{meeting_id}] CHAT_READY sent to frontend", flush=True)
+                except Exception:
+                    pass
+
+            indexer_task = asyncio.create_task(
+                live_indexer(meeting_id, incremental_transcript, on_first_chunk=_on_first_chunk)
+            )
 
             # Task: receive transcripts from Deepgram and forward to extension
             async def receive_from_deepgram():
@@ -62,12 +83,37 @@ async def ws_audio(websocket: WebSocket):
                             if msg_type == "Results":
                                 is_final = data.get("is_final", False)
                                 try:
-                                    transcript = data["channel"]["alternatives"][0]["transcript"]
+                                    alternative = data["channel"]["alternatives"][0]
+                                    words = alternative.get("words", [])
+                                    transcript = alternative.get("transcript", "")
                                 except (KeyError, IndexError):
+                                    words = []
                                     transcript = ""
 
                                 if is_final and transcript.strip():
-                                    txt = transcript.strip()
+                                    # Build speaker-labelled segments from word-level diarization
+                                    if words and any("speaker" in w for w in words):
+                                        segments = []
+                                        current_speaker = None
+                                        current_words = []
+                                        for w in words:
+                                            spk = w.get("speaker", 0)
+                                            if spk != current_speaker:
+                                                if current_words:
+                                                    segments.append(
+                                                        f"Speaker {current_speaker + 1}: {' '.join(current_words)}"
+                                                    )
+                                                current_speaker = spk
+                                                current_words = []
+                                            current_words.append(w.get("punctuated_word") or w.get("word", ""))
+                                        if current_words:
+                                            segments.append(
+                                                f"Speaker {current_speaker + 1}: {' '.join(current_words)}"
+                                            )
+                                        txt = "\n".join(segments)
+                                    else:
+                                        txt = transcript.strip()
+
                                     last = incremental_transcript[-1] if incremental_transcript else ""
                                     # Guard: last must be non-empty before dedup check.
                                     # "anything".endswith("") is ALWAYS True in Python!
@@ -126,6 +172,13 @@ async def ws_audio(websocket: WebSocket):
                                 pass
 
                             dg_receiver.cancel()
+
+                            # ── Stop live indexer + flush remaining turns ──
+                            if indexer_task and not indexer_task.done():
+                                indexer_task.cancel()
+                            await flush_remaining_turns(
+                                meeting_id, incremental_transcript, on_first_chunk=_on_first_chunk
+                            )
 
                             full_transcript = " ".join(
                                 t.strip() for t in incremental_transcript if t.strip()

@@ -3,6 +3,8 @@ import numpy as np
 MEETING_TRANSCRIPTS: dict[str, list[str]] = {}
 MEETING_PCM_BUFFERS = {}
 MEETING_STATE = {}
+RAG_INDEX_STATE = {}   # meeting_id → {index, chunks, pointer, chunk_count}
+
 
 
 # """

@@ -36,6 +36,7 @@ export default function App() {
   const [summary, setSummary] = useState(null)   // null=loading, false=error, obj=ready
   const [status, setStatus] = useState('idle') // idle|recording|processing|ready|error
   const [liveTranscript, setLiveTranscript] = useState([]) // real-time transcript lines
+  const [chatReady, setChatReady] = useState(false) // true as soon as first RAG chunk is indexed
 
   // ── #2 Fix: ref that always reflects latest meetingId for use inside closures ──
   const meetingIdRef = useRef(null)
@@ -102,7 +103,8 @@ export default function App() {
         updateMeetingId(msg.meeting_id)
         setSummary(null)
         setLiveTranscript([])  // clear previous transcript
-        setStatus('recording')
+        setChatReady(() => false)    // reset chat gating for new meeting
+        setStatus(() => 'recording')
         chromeApi.storage.local.set({ currentMeetingId: msg.meeting_id })
       }
 
@@ -111,6 +113,12 @@ export default function App() {
           if (prev.length > 0 && prev[prev.length - 1] === msg.text) return prev
           return [...prev, msg.text]
         })
+      }
+
+      // RAG first chunk ready — enable chat during live meeting
+      if (msg.type === 'CHAT_READY') {
+        setChatReady(() => true)
+        console.log("App.jsx: CHAT_READY received, unlocked chat")
       }
 
       if (msg.type === 'MEETING_ENDED') {
@@ -123,8 +131,9 @@ export default function App() {
           return
         }
         updateMeetingId(id)
-        setStatus('processing')
+        setStatus(() => 'processing')
         startPolling(id)
+        setChatReady(() => true) // Ensure it's unlocked at the end
       }
     }
 
@@ -190,7 +199,7 @@ export default function App() {
         {/* ── #7 Fix: pass status so ChatBot can show error message ── */}
         <ChatBot
           onSend={handleChat}
-          disabled={status !== 'ready'}
+          disabled={!chatReady && status !== 'ready'}
           status={status}
         />
       </main>
