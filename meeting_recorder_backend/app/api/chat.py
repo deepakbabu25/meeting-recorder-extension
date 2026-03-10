@@ -18,7 +18,7 @@ async def chat(req: ChatRequest):
     question = req.question
 
     # Allow chat as long as RAG has at least one chunk (even during live meeting)
-    if not has_chunks(meeting_id):
+    if not await has_chunks(meeting_id):
         meeting = MEETING_STATE.get(meeting_id)
         if not meeting:
             return {"answer": "Meeting not found."}

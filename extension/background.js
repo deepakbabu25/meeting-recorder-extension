@@ -10,9 +10,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-// ❌ Prevent WebRTC globals from being accessed
-// self.RTCRtpSender = undefined;
-
 async function ensureOffscreen() {
   const exists = await chrome.offscreen.hasDocument();
   if (!exists) {
@@ -24,16 +21,15 @@ async function ensureOffscreen() {
     console.log("✅ Offscreen document created");
   }
 }
+
 async function sendToSidePanel(msg) {
   try {
-    // ✅ Fix: use runtime.sendMessage so the side panel receives it.
-    // chrome.tabs.sendMessage only reaches content scripts in a tab,
-    // NOT extension pages like the side panel.
     await chrome.runtime.sendMessage(msg);
   } catch (e) {
     console.warn("Sidepanel not ready, message dropped:", msg.type);
   }
 }
+
 chrome.runtime.onMessage.addListener((msg, sender) => {
   (async () => {
     await ensureOffscreen();
@@ -41,21 +37,25 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     const senderUrl = sender?.url || "";
     console.log("🛣 BG routing:", msg, "from", senderUrl);
 
-    // if(senderUrl.includes("sidepanel.html")){
-    //   // chrome.runtime.sendMessage(msg);
-    //   return;
-    // }
-
-    // if(senderUrl.includes("offscreen.html")){
-    // chrome.runtime.sendMessage(msg);
-    // return;
+    // ── Track recording state in chrome.storage so bootstrap can detect it ──
+    // This allows the side panel to know if a recording is active even when
+    // it was opened AFTER MEETING_STARTED was already fired.
+    if (msg.type === "MEETING_STARTED" && msg.meeting_id) {
+      await chrome.storage.local.set({
+        recording_active: true,
+        activeMeetingId: msg.meeting_id,
+        currentMeetingId: msg.meeting_id
+      });
+    }
+    if (msg.type === "MEETING_ENDED" || msg.type === "MEETING_STOPPED") {
+      await chrome.storage.local.set({ recording_active: false });
+    }
 
     if (senderUrl.includes("popup.html")) {
       chrome.runtime.sendMessage(msg);
       return;
     }
     if (senderUrl.includes("offscreen.html")) {
-      // ✅ Fix: pass msg directly, not wrapped in { msg } which broke msg.type
       await sendToSidePanel(msg);
       return;
     }

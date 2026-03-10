@@ -8,11 +8,23 @@ const STATUS_MESSAGES = {
     error: { icon: '⚠️', text: 'Could not load meeting summary. Chat unavailable.' },
 }
 
-export default function ChatBot({ onSend, disabled, status }) {
+export default function ChatBot({ onSend, disabled, status, initialMessages = [] }) {
     const [messages, setMessages] = useState([])
     const [input, setInput] = useState('')
     const [thinking, setThinking] = useState(false)
     const bottomRef = useRef(null)
+
+    // Pre-populate chat history from DB when the meeting loads
+    useEffect(() => {
+        if (initialMessages && initialMessages.length > 0) {
+            setMessages(initialMessages.map(m => ({
+                role: m.role === 'assistant' ? 'bot' : m.role,
+                text: m.content
+            })))
+        } else {
+            setMessages([])
+        }
+    }, [initialMessages])
 
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' })

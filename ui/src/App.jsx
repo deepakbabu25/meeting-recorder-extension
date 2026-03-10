@@ -3,6 +3,10 @@ import Header from './components/Header'
 import SummaryPanel from './components/SummaryPanel'
 import LiveTranscript from './components/LiveTranscript'
 import ChatBot from './components/ChatBot'
+import LoginDialog from './components/LoginDialog'
+import HistoryDashboard from './components/HistoryDashboard'
+import { saveGuestMeeting, deleteGuestMeeting } from './utils/indexedDB'
+import { loginWithGoogle } from './utils/auth'
 import './App.css'
 
 const API_BASE = 'https://debroah-prehazard-candance.ngrok-free.dev'
@@ -37,9 +41,32 @@ export default function App() {
   const [status, setStatus] = useState('idle') // idle|recording|processing|ready|error
   const [liveTranscript, setLiveTranscript] = useState([]) // real-time transcript lines
   const [chatReady, setChatReady] = useState(false) // true as soon as first RAG chunk is indexed
+  const [showLogin, setShowLogin] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [chatHistory, setChatHistory] = useState([]) // maintain Q&A state for guest storage
+  const [chatDbHistory, setChatDbHistory] = useState([]) // chat history loaded from DB
+  const authTokenRef = useRef(null)
 
   // ── #2 Fix: ref that always reflects latest meetingId for use inside closures ──
   const meetingIdRef = useRef(null)
+  const statusRef = useRef('idle')
+
+  useEffect(() => {
+    statusRef.current = status
+  }, [status])
+
+  useEffect(() => {
+    const handleUnload = () => {
+      // If it's a guest AND they are not actively recording a live meeting
+      if (!authTokenRef.current && statusRef.current !== 'recording') {
+        if (meetingIdRef.current) deleteGuestMeeting(meetingIdRef.current)
+        chromeApi.storage.local.remove('currentMeetingId')
+      }
+    }
+    window.addEventListener('beforeunload', handleUnload)
+    return () => window.removeEventListener('beforeunload', handleUnload)
+  }, [])
+
   // ── #3 & #4 Fix: single interval ref cleared on new meeting / remount ────────
   const pollingRef = useRef(null)
   const pollingStarted = useRef(false)
@@ -64,6 +91,21 @@ export default function App() {
   useEffect(() => {
     async function bootstrap() {
       try {
+        const authData = await chromeApi.storage.local.get('auth_token');
+        if (authData.auth_token) {
+          authTokenRef.current = authData.auth_token;
+        }
+
+        // Check if a recording is currently active — set by background.js.
+        // If so, show the recording state and skip loading the old summary.
+        const recData = await chromeApi.storage.local.get(['recording_active', 'activeMeetingId'])
+        if (recData.recording_active && recData.activeMeetingId) {
+          updateMeetingId(recData.activeMeetingId)
+          setSummary(null)
+          setStatus('recording')
+          return  // Don't load any old summary during an active recording
+        }
+
         const stored = await chromeApi.storage.local.get('currentMeetingId')
         if (!stored.currentMeetingId) return
 
@@ -79,6 +121,7 @@ export default function App() {
         if (data.status === 'READY') {
           setSummary(data.summary)
           setStatus('ready')
+          if (!authTokenRef.current) setShowLogin(true)
         } else if (data.status === 'PROCESSING') {
           // ── #4 Fix: only start polling if not already running ─────────────────
           if (!pollingStarted.current) startPolling(stored.currentMeetingId)
@@ -103,15 +146,27 @@ export default function App() {
         updateMeetingId(msg.meeting_id)
         setSummary(null)
         setLiveTranscript([])  // clear previous transcript
+        setChatHistory([])     // clear previous chat
+        setChatDbHistory([])   // clear persisted history from previous meeting
         setChatReady(() => false)    // reset chat gating for new meeting
+        setShowLogin(false)    // Hide login dialog from previous meetings
         setStatus(() => 'recording')
         chromeApi.storage.local.set({ currentMeetingId: msg.meeting_id })
       }
 
       if (msg.type === 'PARTIAL_TRANSCRIPT') {
+        const newText = msg.text
         setLiveTranscript(prev => {
-          if (prev.length > 0 && prev[prev.length - 1] === msg.text) return prev
-          return [...prev, msg.text]
+          if (prev.length > 0 && prev[prev.length - 1] === newText) return prev
+          const nextState = [...prev, newText]
+
+          // Save to IndexedDB if guest
+          if (!authTokenRef.current && meetingIdRef.current) {
+            const chunk = { speaker: "Unknown", text: newText, start_time: 0, end_time: 0 }
+            saveGuestMeeting(meetingIdRef.current, { transcript_chunks: [{ speaker: "Guest", text: newText }] })
+          }
+
+          return nextState
         })
       }
 
@@ -166,7 +221,28 @@ export default function App() {
           stopPolling()
           setSummary(data.summary)
           setStatus('ready')
+
+          // Load chat history from DB for authenticated users
+          if (authTokenRef.current && authTokenRef.current !== 'LOGGED_IN') {
+            try {
+              const histRes = await fetchWithTimeout(
+                `${API_BASE}/api/meetings/${id}`,
+                { headers: { ...HEADERS, 'Authorization': `Bearer ${authTokenRef.current}` } }
+              )
+              if (histRes.ok) {
+                const histData = await histRes.json()
+                setChatDbHistory(histData.qa_history || [])
+              }
+            } catch (e) {
+              console.warn('Could not load chat history from DB:', e.message)
+            }
+          } else {
+            // Guest: save to IndexedDB and show login prompt
+            saveGuestMeeting(id, { summary: data.summary })
+            setShowLogin(true)
+          }
         }
+
         if (data.status === 'NOT_FOUND') {
           stopPolling()
           setSummary(false)
@@ -187,12 +263,47 @@ export default function App() {
       body: JSON.stringify({ meeting_id: meetingIdRef.current, question }),
     }, 30000)  // 30s — LLM can be slow on first query
     const data = await res.json()
+
+    // Store the Q&A pair in App state for migration
+    const qaPair = { question: question, answer: data.answer }
+    setChatHistory(prev => {
+      const nextState = [...prev, qaPair]
+      // Save to IndexedDB if guest
+      if (!authTokenRef.current && meetingIdRef.current) {
+        saveGuestMeeting(meetingIdRef.current, { qa_history: nextState })
+      }
+      return nextState
+    })
+
     return data.answer
+  }
+
+  // ── History handler ───────────────────────────────────────────────────────────
+  async function handleOpenHistory() {
+    if (!authTokenRef.current || authTokenRef.current === "LOGGED_IN") {
+      // Since LOGGED_IN is a placeholder from LoginDialog, fetch the real one
+      const authData = await chromeApi.storage.local.get('auth_token');
+      if (authData.auth_token) {
+        authTokenRef.current = authData.auth_token;
+        setShowHistory(true);
+        return;
+      }
+      // If absolutely no token, prompt login!
+      try {
+        const token = await loginWithGoogle();
+        authTokenRef.current = token;
+        setShowHistory(true);
+      } catch (e) {
+        console.warn("User cancelled login for history view.");
+      }
+    } else {
+      setShowHistory(true);
+    }
   }
 
   return (
     <div className="app">
-      <Header meetingId={meetingId} />
+      <Header meetingId={meetingId} onOpenHistory={handleOpenHistory} />
       <main className="app-main">
         <LiveTranscript lines={liveTranscript} status={status} />
         <SummaryPanel summary={summary} status={status} />
@@ -201,7 +312,33 @@ export default function App() {
           onSend={handleChat}
           disabled={!chatReady && status !== 'ready'}
           status={status}
+          initialMessages={chatDbHistory}
         />
+
+        {showLogin && (
+          <LoginDialog
+            onClose={(isLoggedIn) => {
+              if (isLoggedIn) {
+                // Instantly update local ref so it doesn't trigger again
+                authTokenRef.current = "LOGGED_IN";
+              }
+              setShowLogin(false);
+            }}
+            currentMeetingData={{
+              meeting_id: meetingIdRef.current,
+              transcript_chunks: liveTranscript.map(t => ({ text: t })),
+              summary: summary,
+              qa_history: chatHistory
+            }}
+          />
+        )}
+
+        {showHistory && (
+          <HistoryDashboard
+            authToken={authTokenRef.current}
+            onClose={() => setShowHistory(false)}
+          />
+        )}
       </main>
     </div>
   )

@@ -1,63 +1,78 @@
 """
 app/rag/vector_store.py
 
-In-memory FAISS vector store for meeting chunk retrieval.
+PostgreSQL + pgvector persistent vector store for meeting chunk retrieval.
 
-This is THE single swap point for future PostgreSQL + pgvector migration.
-Everything above this layer (retriever, chunker, embedder) remains unchanged.
+Replaces the previous in-memory FAISS implementation. All embeddings are
+now persisted to the `meeting_chunks` table using the pgvector extension.
 
-Per-meeting state stored in RAG_INDEX_STATE (from state/meetings.py):
-  {
-    "index":    faiss.IndexFlatIP,   # cosine similarity (normalized vectors)
-    "chunks":   List[Dict],          # chunk metadata in insertion order
-    "pointer":  int,                 # how many turns from incremental_transcript have been processed
-    "chunk_count": int,              # total indexed chunks so far
-  }
+Per-meeting pointer state (how many transcript turns have been indexed)
+is still tracked in RAM via RAG_INDEX_STATE since it is only needed
+during the live meeting session.
 """
 
 import numpy as np
-import faiss
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
+from sqlalchemy import select, func, delete
+from pgvector.sqlalchemy import Vector
+
+from app.db.database import AsyncSessionLocal
+from app.db.models import MeetingChunk
 from app.state.meetings import RAG_INDEX_STATE
+
+import uuid
 
 EMBEDDING_DIM = 384   # all-MiniLM-L6-v2 output dimension
 TOP_K_DEFAULT = 4     # chunks to retrieve per query
 
 
-def _ensure_index(meeting_id: str) -> None:
-    """Initialise the per-meeting state dict if not already present."""
+def _ensure_rag_state(meeting_id: str) -> None:
+    """Initialise the per-meeting pointer dict if not already present."""
     if meeting_id not in RAG_INDEX_STATE:
         RAG_INDEX_STATE[meeting_id] = {
-            "index": faiss.IndexFlatIP(EMBEDDING_DIM),  # inner product = cosine for normalised vecs
-            "chunks": [],
-            "pointer": 0,       # index into incremental_transcript list
+            "pointer": 0,
             "chunk_count": 0,
         }
 
 
-def add_chunks(meeting_id: str, chunks: List[Dict[str, Any]], embeddings: np.ndarray) -> None:
+async def add_chunks(meeting_id: str, chunks: List[Dict[str, Any]], embeddings: np.ndarray) -> None:
     """
-    Add new chunks + their embeddings to the FAISS index.
+    Persist new chunks and their embeddings to PostgreSQL via pgvector.
 
     Args:
         meeting_id:  The meeting session ID
         chunks:      List of chunk dicts from chunker.py
         embeddings:  numpy float32 array of shape (len(chunks), EMBEDDING_DIM)
     """
-    _ensure_index(meeting_id)
-    state = RAG_INDEX_STATE[meeting_id]
+    _ensure_rag_state(meeting_id)
 
     if embeddings.ndim == 1:
         embeddings = embeddings.reshape(1, -1)
 
-    state["index"].add(embeddings)
-    state["chunks"].extend(chunks)
-    state["chunk_count"] += len(chunks)
+    async with AsyncSessionLocal() as session:
+        new_rows = []
+        for i, chunk in enumerate(chunks):
+            embedding_list = embeddings[i].tolist()
+            new_rows.append(MeetingChunk(
+                id=uuid.uuid4(),
+                meeting_id=uuid.UUID(meeting_id),
+                chunk_index=chunk.get("chunk_index", i),
+                speakers=chunk.get("speakers", []),
+                text=chunk.get("text", ""),
+                start_time=chunk.get("start_time"),
+                end_time=chunk.get("end_time"),
+                embedding=embedding_list,
+            ))
+        session.add_all(new_rows)
+        await session.commit()
+
+    RAG_INDEX_STATE[meeting_id]["chunk_count"] += len(chunks)
+    print(f"[pgvector] Saved {len(chunks)} chunks. Total: {RAG_INDEX_STATE[meeting_id]['chunk_count']}", flush=True)
 
 
-def search(meeting_id: str, query_embedding: np.ndarray, top_k: int = TOP_K_DEFAULT) -> List[Dict[str, Any]]:
+async def search(meeting_id: str, query_embedding: np.ndarray, top_k: int = TOP_K_DEFAULT) -> List[Dict[str, Any]]:
     """
-    Find the top-K most semantically similar chunks for a query.
+    Find the top-K most semantically similar chunks for a query using cosine similarity.
 
     Args:
         meeting_id:       The meeting session ID
@@ -67,46 +82,67 @@ def search(meeting_id: str, query_embedding: np.ndarray, top_k: int = TOP_K_DEFA
     Returns:
         List of chunk dicts (may be fewer than top_k if index is small)
     """
-    state = RAG_INDEX_STATE.get(meeting_id)
-    if not state or state["chunk_count"] == 0:
-        return []
+    if query_embedding.ndim == 2:
+        query_embedding = query_embedding[0]
 
-    if query_embedding.ndim == 1:
-        query_embedding = query_embedding.reshape(1, -1)
+    query_list = query_embedding.tolist()
 
-    actual_k = min(top_k, state["chunk_count"])
-    _, indices = state["index"].search(query_embedding, actual_k)
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(MeetingChunk)
+            .where(MeetingChunk.meeting_id == uuid.UUID(meeting_id))
+            .order_by(MeetingChunk.embedding.cosine_distance(query_list))
+            .limit(top_k)
+        )
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
 
-    results = []
-    for idx in indices[0]:
-        if 0 <= idx < len(state["chunks"]):
-            results.append(state["chunks"][idx])
-    return results
+    return [
+        {
+            "chunk_index": row.chunk_index,
+            "speakers": row.speakers or [],
+            "text": row.text,
+            "start_time": row.start_time,
+            "end_time": row.end_time,
+        }
+        for row in rows
+    ]
 
 
-def has_chunks(meeting_id: str) -> bool:
+async def has_chunks(meeting_id: str) -> bool:
     """Return True if at least one chunk has been indexed for this meeting."""
-    state = RAG_INDEX_STATE.get(meeting_id)
-    return bool(state and state["chunk_count"] > 0)
+    async with AsyncSessionLocal() as session:
+        stmt = select(func.count()).where(
+            MeetingChunk.meeting_id == uuid.UUID(meeting_id)
+        )
+        result = await session.execute(stmt)
+        count = result.scalar()
+    return (count or 0) > 0
 
 
 def get_pointer(meeting_id: str) -> int:
-    """Return the incremental_transcript list index up to which we've already processed."""
+    """Return the incremental_transcript list index up to which we've processed."""
     state = RAG_INDEX_STATE.get(meeting_id)
     return state["pointer"] if state else 0
 
 
 def set_pointer(meeting_id: str, pointer: int) -> None:
     """Update the pointer after processing new turns."""
-    _ensure_index(meeting_id)
+    _ensure_rag_state(meeting_id)
     RAG_INDEX_STATE[meeting_id]["pointer"] = pointer
 
 
 def get_chunk_count(meeting_id: str) -> int:
+    """Return in-memory chunk count for this session (updated on every add_chunks call)."""
     state = RAG_INDEX_STATE.get(meeting_id)
     return state["chunk_count"] if state else 0
 
 
-def delete(meeting_id: str) -> None:
-    """Remove all RAG state for a meeting (cleanup)."""
+async def delete(meeting_id: str) -> None:
+    """Remove all chunk rows for a meeting (cleanup after meeting ends)."""
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            delete(MeetingChunk).where(MeetingChunk.meeting_id == uuid.UUID(meeting_id))
+        )
+        await session.commit()
     RAG_INDEX_STATE.pop(meeting_id, None)

@@ -8,7 +8,8 @@
     "storage",
     "offscreen",
     "sidePanel",
-    "alarms"
+    "alarms",
+    "identity"
   ],
   "icons": {
     "16": "icon 16 x 16.png",
@@ -28,5 +29,13 @@
   },
   "side_panel": {
     "default_path": "sidepanel-dist/index.html"
+  },
+  "oauth2": {
+    "client_id": "904444073634-89a1662dj91g8341td3uublhe9e2873q.apps.googleusercontent.com",
+    "scopes": [
+      "openid",
+      "email",
+      "profile"
+    ]
   }
 }

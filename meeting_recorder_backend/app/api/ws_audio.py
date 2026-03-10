@@ -1,8 +1,12 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.config import DEEPGRAM_API_KEY
-from app.state.meetings import MEETING_STATE
+from app.state.meetings import MEETING_STATE, get_meeting_state, save_meeting_state, clear_meeting_state
 from app.services.meeting_summary import generate_meeting_summary
 from app.rag.retriever import live_indexer, flush_remaining_turns
+from app.core.security import verify_access_token
+from app.db.database import AsyncSessionLocal
+from app.db.models import Meeting, Transcript, MeetingSummary
+from app.rag.parser import parse_turns
 import asyncio
 import uuid
 import json
@@ -30,18 +34,55 @@ DEEPGRAM_URL = (
 
 
 @router.websocket("/ws/audio")
-async def ws_audio(websocket: WebSocket):
+async def ws_audio(websocket: WebSocket, token: str = Query(None), meeting_id: str = Query(None)):
     await websocket.accept()
-    meeting_id = str(uuid.uuid4())
+    
+    is_reconnect = False
+    if meeting_id:
+        is_reconnect = True
+        print(f"[{meeting_id}] Resuming existing connection...")
+    else:
+        meeting_id = str(uuid.uuid4())
 
-    print(f"[{meeting_id}] WebSocket connection accepted", flush=True)
+    # Try to extract authenticated user
+    user_id = None
+    if token:
+        user_id = verify_access_token(token)
 
-    await websocket.send_text(json.dumps({
-        "type": "MEETING_STARTED",
-        "meeting_id": meeting_id
-    }))
+    auth_status = "Authenticated" if user_id else "Guest"
+    print(f"[{meeting_id}] WebSocket connection accepted ({auth_status})", flush=True)
 
-    incremental_transcript: list[str] = []
+    if not is_reconnect:
+        await websocket.send_text(json.dumps({
+            "type": "MEETING_STARTED",
+            "meeting_id": meeting_id
+        }))
+
+    # ====== PERSISTENT RECOVERY ======
+    m_state = get_meeting_state(meeting_id)
+    if user_id:
+        m_state["user_id"] = user_id
+    incremental_transcript = m_state.setdefault("incremental_transcript", [])
+    save_meeting_state(meeting_id)
+
+    # ====== CREATE MEETING ROW EARLY (so RAG FK constraint is satisfied) ======
+    # The Meeting row must exist BEFORE chunks are inserted by the live indexer.
+    # We create it immediately at session start and update its status at the end.
+    if user_id and not is_reconnect:
+        try:
+            async with AsyncSessionLocal() as session:
+                new_meeting = Meeting(
+                    id=uuid.UUID(meeting_id),
+                    user_id=uuid.UUID(user_id),
+                    title="Recorded Meeting",
+                    status="IN_PROGRESS"
+                )
+                session.add(new_meeting)
+                await session.commit()
+                print(f"[{meeting_id}] Meeting row created in DB", flush=True)
+        except Exception as db_start_err:
+            print(f"[{meeting_id}] Could not pre-create meeting row: {db_start_err}")
+
     last_ping = time.time()
     meeting_ended = False
     indexer_task = None
@@ -56,6 +97,9 @@ async def ws_audio(websocket: WebSocket):
             print(f"[{meeting_id}] Connected to Deepgram", flush=True)
 
             # ── Launch RAG live indexer ────────────────────────────────────
+            # To avoid recreating duplicate live indexers if it's a reconnect,
+            # we check if one is already running. For simplicity now, we re-bind it 
+            # to the current Websocket session so CHAT_READY events go to the right client.
             async def _on_first_chunk():
                 """Called by live_indexer when first chunk is indexed → enable chat in UI."""
                 try:
@@ -67,6 +111,8 @@ async def ws_audio(websocket: WebSocket):
                 except Exception:
                     pass
 
+            # Only launch indexer if not already running for this meeting (or if we lost it across WS drops)
+            # In a robust system we'd track this in MEETING_STATE, but starting a new task mapped to the new WS avoids dead sockets.
             indexer_task = asyncio.create_task(
                 live_indexer(meeting_id, incremental_transcript, on_first_chunk=_on_first_chunk)
             )
@@ -126,6 +172,8 @@ async def ws_audio(websocket: WebSocket):
                                         print(f"[{meeting_id}] Skipping dup: '{txt[:50]}'")
                                     else:
                                         incremental_transcript.append(txt)
+                                        m_state["incremental_transcript"] = incremental_transcript
+                                        save_meeting_state(meeting_id)
                                         print(f"[{meeting_id}] Live ✅: {txt}")
                                         try:
                                             await websocket.send_text(json.dumps({
@@ -188,12 +236,10 @@ async def ws_audio(websocket: WebSocket):
                             print(full_transcript)
                             print(f"[{meeting_id}] ============================\n")
 
-                            MEETING_STATE[meeting_id] = {
-                                "final_transcript": full_transcript,
-                                "final_summary": None,
-                                "chat_history": [],
-                                "status": "PROCESSING"
-                            }
+                            m_state["final_transcript"] = full_transcript
+                            m_state["final_summary"] = None
+                            m_state["status"] = "PROCESSING"
+                            save_meeting_state(meeting_id)
 
                             await websocket.send_text(json.dumps({
                                 "type": "MEETING_ENDED",
@@ -204,35 +250,98 @@ async def ws_audio(websocket: WebSocket):
                             word_count = len(full_transcript.split())
                             try:
                                 if not full_transcript:
-                                    MEETING_STATE[meeting_id]["final_summary"] = {
+                                    m_state["final_summary"] = {
                                         "summary": "No discussion occurred in this meeting.",
                                         "key_points": [], "action_items": [], "decisions": []
                                     }
                                 elif word_count < MIN_WORDS_REQUIRED:
-                                    MEETING_STATE[meeting_id]["final_summary"] = {
+                                    m_state["final_summary"] = {
                                         "summary": "Not enough information was recorded to generate a meaningful summary.",
                                         "key_points": [], "action_items": [], "decisions": []
                                     }
                                 else:
                                     summary_result = await generate_meeting_summary(full_transcript)
                                     summary_dict = summary_result.model_dump()
-                                    MEETING_STATE[meeting_id]["final_summary"] = {
+                                    m_state["final_summary"] = {
                                         "summary": summary_dict.get("summary", ""),
                                         "key_points": summary_dict.get("key_points", []),
                                         "action_items": summary_dict.get("action_items", []),
                                         "decisions": summary_dict.get("decisions", [])
                                     }
 
-                                MEETING_STATE[meeting_id]["status"] = "READY"
+                                m_state["status"] = "READY"
+                                save_meeting_state(meeting_id)
                                 print(f"[{meeting_id}] Summary generated successfully")
 
                             except Exception as e:
                                 print(f"[{meeting_id}] Summary generation failed: {e}")
-                                MEETING_STATE[meeting_id]["final_summary"] = {
+                                m_state["final_summary"] = {
                                     "summary": "Meeting analysis completed, but summary could not be generated.",
                                     "key_points": [], "action_items": [], "decisions": []
                                 }
-                                MEETING_STATE[meeting_id]["status"] = "FAILED"
+                                m_state["status"] = "FAILED"
+                                save_meeting_state(meeting_id)
+
+                            # ── PERSIST IF AUTHENTICATED ─────────────────────
+                            if user_id:
+                                print(f"[{meeting_id}] Saving authenticated meeting to DB...")
+                                try:
+                                    async with AsyncSessionLocal() as session:
+                                        # Fetch existing row (created at session start)
+                                        meeting_row = await session.get(Meeting, uuid.UUID(meeting_id))
+                                        if meeting_row:
+                                            meeting_row.status = m_state["status"]
+                                        else:
+                                            # Fallback: create if somehow missing
+                                            meeting_row = Meeting(
+                                                id=uuid.UUID(meeting_id),
+                                                user_id=uuid.UUID(user_id),
+                                                title="Recorded Meeting",
+                                                status=m_state["status"]
+                                            )
+                                            session.add(meeting_row)
+
+                                        # Parse the raw lines strictly into speakers
+                                        all_turns = parse_turns(incremental_transcript)
+                                        for t in all_turns:
+                                            session.add(Transcript(
+                                                meeting_id=new_meeting.id,
+                                                speaker=t.get("speaker", "Unknown"),
+                                                text=t.get("text", "")
+                                            ))
+
+                                        # Add Summary
+                                        fin_sum = m_state["final_summary"]
+                                        if fin_sum:
+                                            session.add(MeetingSummary(
+                                                meeting_id=new_meeting.id,
+                                                summary_text=fin_sum.get("summary", ""),
+                                                key_points=fin_sum.get("key_points", []),
+                                                action_items=fin_sum.get("action_items", []),
+                                                decisions=fin_sum.get("decisions", [])
+                                            ))
+
+                                        # Add Chat QA History
+                                        chat_hist = m_state.get("chat_history", [])
+                                        for qa in chat_hist:
+                                            session.add(ChatMessage(
+                                                meeting_id=new_meeting.id,
+                                                role="user",
+                                                content=qa.get("question", "")
+                                            ))
+                                            session.add(ChatMessage(
+                                                meeting_id=new_meeting.id,
+                                                role="assistant",
+                                                content=qa.get("answer", "")
+                                            ))
+
+                                        await session.commit()
+                                        print(f"[{meeting_id}] Successfully saved to PostgreSQL!")
+                                except Exception as db_err:
+                                    print(f"[{meeting_id}] DB Save Error: {db_err}")
+                                
+                                # Safe to delete cache after DB save!
+                                clear_meeting_state(meeting_id)
 
                             await websocket.close()
                             break

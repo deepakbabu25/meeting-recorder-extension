@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import './Header.css'
 
-export default function Header({ meetingId }) {
+export default function Header({ meetingId, onOpenHistory }) {
     const [menuOpen, setMenuOpen] = useState(false)
     const menuRef = useRef(null)
 
@@ -18,9 +18,7 @@ export default function Header({ meetingId }) {
 
     function handleHistory() {
         setMenuOpen(false)
-        // TODO: navigate to dashboard when DB is ready
-        // chrome.tabs.create({ url: 'https://your-dashboard.com/history' })
-        alert('Dashboard coming soon!')
+        if (onOpenHistory) onOpenHistory()
     }
 
     return (

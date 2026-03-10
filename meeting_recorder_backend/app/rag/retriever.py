@@ -48,7 +48,7 @@ async def live_indexer(
             await _index_new_turns(meeting_id, incremental_transcript)
 
             # Fire CHAT_READY as soon as we have at least one chunk
-            if not first_chunk_fired and vs.has_chunks(meeting_id):
+            if not first_chunk_fired and await vs.has_chunks(meeting_id):
                 first_chunk_fired = True
                 print(f"[RAG][{meeting_id}]  First chunk indexed — chat is now available!", flush=True)
                 if on_first_chunk:
@@ -72,11 +72,11 @@ async def flush_remaining_turns(
     fired (total turns < MIN_TURNS_PER_CHUNK).
     """
     print(f"\n[RAG][{meeting_id}]  Flushing remaining turns before generating summary...", flush=True)
-    first_had_chunks = vs.has_chunks(meeting_id)
+    first_had_chunks = await vs.has_chunks(meeting_id)
 
     await _index_new_turns(meeting_id, incremental_transcript, force=True)
 
-    if not first_had_chunks and vs.has_chunks(meeting_id) and on_first_chunk:
+    if not first_had_chunks and await vs.has_chunks(meeting_id) and on_first_chunk:
         try:
             await on_first_chunk()
         except Exception as e:
@@ -91,61 +91,61 @@ async def _index_new_turns(
     force: bool = False,
 ) -> None:
     """
-    Internal: parse unprocessed turns, build chunks, embed, and store.
-
-    Args:
-        force: If True, index even a partial (sub-minimum) chunk at the end.
-               Used during flush on MEETING_END.
+    Internal: parse turns, build chunks, embed off-thread, and store.
     """
+    if not incremental_transcript:
+        return
+
+    # 1. Check if anything new arrived since last poll
     pointer = vs.get_pointer(meeting_id)
     total_turns_now = len(incremental_transcript)
 
-    if total_turns_now <= pointer:
+    if total_turns_now <= pointer and not force:
         return  # nothing new since last poll
 
-    # Parse only new turns
+    # 2. Parse all turns from the transcript
     all_turns = parse_turns(incremental_transcript)
-
     if not all_turns:
         return
 
-    # Get pending window (includes overlap from previous chunk)
-    pending_turns, overlap_start = get_pending_turns(all_turns, pointer)
+    # 3. Re-calculate sliding-window chunks globally so overlaps never drift
+    all_chunks = build_chunks(all_turns, chunk_offset=0)
+    
+    # 4. If live-polling, drop the very last chunk so we don't index a partial boundary prematurely
+    #    (If force=True at MEETING_END, keep all chunks up to the end)
+    valid_chunks = all_chunks if force else all_chunks[:-1]
+    
+    # 5. Only process fragments we haven't already indexed
+    current_count = vs.get_chunk_count(meeting_id)
+    new_chunks = valid_chunks[current_count:]
 
-    if not pending_turns:
+    if not new_chunks:
+        # even if no new chunks, update pointer so we don't re-parse constantly
+        vs.set_pointer(meeting_id, total_turns_now)
         return
 
-    # Check we have enough turns for at least one chunk (unless forced)
-    new_turn_count = len(all_turns) - pointer
-    if not force and new_turn_count < MIN_TURNS_PER_CHUNK:
-        return
+    # Rectify their sequence offset
+    for i, chunk in enumerate(new_chunks):
+        chunk["chunk_index"] = current_count + i
 
-    chunk_offset = vs.get_chunk_count(meeting_id)
-    chunks = build_chunks(pending_turns, chunk_offset=chunk_offset)
+    # 6. VERY IMPORTANT: run the blocking CPU-bound ML encoder in a background thread!
+    # Otherwise it blocks the FastAPI event loop, freezing WebSocket audio streams for ~200ms
+    texts = [c["text"] for c in new_chunks]
+    embeddings = await asyncio.to_thread(encode, texts)
 
-    if not chunks:
-        return
-
-    # Embed all chunks (batch call — efficient)
-    texts = [c["text"] for c in chunks]
-    embeddings = encode(texts)
-
-    # Add to FAISS index
-    vs.add_chunks(meeting_id, chunks, embeddings)
-
-    # Update pointer to the last turn we processed
-    new_pointer = all_turns[-1]["index"] + 1
-    vs.set_pointer(meeting_id, new_pointer)
+    # 7. Store in vector DB
+    await vs.add_chunks(meeting_id, new_chunks, embeddings)
+    vs.set_pointer(meeting_id, total_turns_now)
 
     print(
-        f"[RAG][{meeting_id}]  Transformed {len(pending_turns)} turns -> {len(chunks)} chunk(s). "
-        f"Total chunks in FAISS index: {vs.get_chunk_count(meeting_id)}", flush=True
+        f"[RAG][{meeting_id}]  Embedded {len(new_chunks)} new chunk(s). "
+        f"Total chunks: {vs.get_chunk_count(meeting_id)}", flush=True
     )
 
 
-def retrieve_context(meeting_id: str, question: str, top_k: int = 4) -> str:
+async def retrieve_context(meeting_id: str, question: str, top_k: int = 4) -> str:
     """
-    Retrieve the most relevant transcript chunks for a question.
+    Retrieve the most relevant transcript chunks for a question from pgvector.
     Returns a formatted string ready to inject as LLM context.
 
     Args:
@@ -156,11 +156,11 @@ def retrieve_context(meeting_id: str, question: str, top_k: int = 4) -> str:
     Returns:
         Formatted context string, or empty string if no chunks indexed yet
     """
-    if not vs.has_chunks(meeting_id):
+    if not await vs.has_chunks(meeting_id):
         return ""
 
     query_embedding = encode(question)[0]
-    chunks = vs.search(meeting_id, query_embedding, top_k=top_k)
+    chunks = await vs.search(meeting_id, query_embedding, top_k=top_k)
 
     print(f"\n[RAG][{meeting_id}] 🔍 Found {len(chunks)} relevant chunk(s) for query: '{question}'", flush=True)
 

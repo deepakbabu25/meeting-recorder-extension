@@ -7,6 +7,8 @@ from app.api.meeting_status import router as meeting_status_router
 from app.api.chat import router as chat_agent
 from app.api.meeting import router as meeting_router
 from app.api.lat_meeting import router as latestMeeting
+from app.api.auth import router as auth_router
+from app.api.meetings_history import router as meetings_history_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # from app.api.speaker_identification import router as diarization_router
@@ -52,6 +54,7 @@ app.include_router(chat_agent)
 
 app.include_router(meeting_router)
 app.include_router(latestMeeting)
-
+app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
+app.include_router(meetings_history_router, prefix="/api/meetings", tags=["Meetings"])
 
 # app.include_router(diarization_router)

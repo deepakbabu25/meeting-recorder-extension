@@ -15,9 +15,12 @@ document.getElementById("start").onclick = async () => {
 
   const streamId = await chrome.tabCapture.getMediaStreamId();
 
+  const authData = await chrome.storage.local.get('auth_token');
+
   chrome.runtime.sendMessage({
     type: "START_TAB_CAPTURE",
-    streamId
+    streamId,
+    token: authData.auth_token || null
   });
 
   console.log("🎧 tabCapture streamId sent, side panel opened");
